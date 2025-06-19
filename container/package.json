@@ -1,0 +1,23 @@
+{
+  "name": "video-processor",
+  "version": "1.0.0",
+  "description": "Video processing container for VisionSync platform",
+  "main": "dist/process-video.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/process-video.js",
+    "dev": "tsc && node dist/process-video.js",
+    "clean": "rm -rf dist/"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1490.0",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,607 @@
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+import * as awsx from "@pulumi/awsx";
+
+// Configuration
+const config = new pulumi.Config();
+const region = aws.getRegion();
+const caller = aws.getCallerIdentity();
+
+// Tags for all resources
+const commonTags = {
+  Project: "VisionSync",
+  Environment: pulumi.getStack(),
+  ManagedBy: "Pulumi",
+};
+
+// Create VPC for ECS tasks
+const vpc = new awsx.ec2.Vpc("vision-sync-vpc", {
+  numberOfAvailabilityZones: 2,
+  enableDnsHostnames: true,
+  enableDnsSupport: true,
+  tags: {
+    ...commonTags,
+    Name: "vision-sync-vpc",
+  },
+});
+
+// Create S3 bucket for raw videos
+const rawVideosBucket = new aws.s3.Bucket("raw-videos-bucket", {
+  bucket: `vision-sync-raw-videos-${pulumi.getStack()}-${Math.random().toString(36).substring(7)}`,
+  forceDestroy: true, // Allow destruction in dev environments
+  
+  corsRules: [{
+    allowedHeaders: ["*"],
+    allowedMethods: ["GET", "PUT", "POST"],
+    allowedOrigins: ["*"],
+    maxAgeSeconds: 3000,
+  }],
+  
+  lifecycleRules: [{
+    id: "delete-incomplete-uploads",
+    enabled: true,
+    // Fixed: Use abortIncompleteMultipartUploadDays instead of abortIncompleteMultipartUploads
+    abortIncompleteMultipartUploadDays: 1,
+  }],
+  
+  tags: {
+    ...commonTags,
+    Purpose: "raw-video-storage",
+  },
+});
+
+// Create S3 bucket for processed videos
+const processedVideosBucket = new aws.s3.Bucket("processed-videos-bucket", {
+  bucket: `vision-sync-processed-videos-${pulumi.getStack()}-${Math.random().toString(36).substring(7)}`,
+  forceDestroy: true,
+  
+  corsRules: [{
+    allowedHeaders: ["*"],
+    allowedMethods: ["GET", "HEAD"],
+    allowedOrigins: ["*"],
+    maxAgeSeconds: 86400, // 24 hours for processed content
+  }],
+  
+  lifecycleRules: [{
+    id: "transition-to-ia",
+    enabled: true,
+    transitions: [{
+      days: 30,
+      storageClass: "STANDARD_IA", // Move to cheaper storage after 30 days
+    }],
+  }],
+  
+  tags: {
+    ...commonTags,
+    Purpose: "processed-video-storage",
+  },
+});
+
+// Block public access for security
+new aws.s3.BucketPublicAccessBlock("raw-videos-bucket-pab", {
+  bucket: rawVideosBucket.id,
+  blockPublicAcls: true,
+  blockPublicPolicy: true,
+  ignorePublicAcls: true,
+  restrictPublicBuckets: true,
+});
+
+new aws.s3.BucketPublicAccessBlock("processed-videos-bucket-pab", {
+  bucket: processedVideosBucket.id,
+  blockPublicAcls: true,
+  blockPublicPolicy: true,
+  ignorePublicAcls: true,
+  restrictPublicBuckets: true,
+});
+
+// Create SQS Dead Letter Queue
+const videoProcessingDLQ = new aws.sqs.Queue("video-processing-dlq", {
+  name: `vision-sync-video-processing-dlq-${pulumi.getStack()}`,
+  messageRetentionSeconds: 1209600, // 14 days
+  tags: {
+    ...commonTags,
+    Purpose: "video-processing-dlq",
+  },
+});
+
+// Create SQS queue for video processing
+const videoProcessingQueue = new aws.sqs.Queue("video-processing-queue", {
+  name: `vision-sync-video-processing-${pulumi.getStack()}`,
+  visibilityTimeoutSeconds: 960, // 16 minutes (longer than Lambda timeout)
+  messageRetentionSeconds: 1209600, // 14 days
+  receiveWaitTimeSeconds: 20, // Enable long polling
+  
+  redrivePolicy: pulumi.jsonStringify({
+    deadLetterTargetArn: videoProcessingDLQ.arn,
+    maxReceiveCount: 3,
+  }),
+  
+  tags: {
+    ...commonTags,
+    Purpose: "video-processing-queue",
+  },
+});
+
+// Create CloudWatch log groups
+const ecsLogGroup = new aws.cloudwatch.LogGroup("ecs-video-processing-logs", {
+  name: `/ecs/vision-sync-video-processing-${pulumi.getStack()}`,
+  retentionInDays: 7,
+  tags: {
+    ...commonTags,
+    Purpose: "ecs-logs",
+  },
+});
+
+const lambdaLogGroup = new aws.cloudwatch.LogGroup("lambda-trigger-logs", {
+  name: `/aws/lambda/vision-sync-ecs-trigger-${pulumi.getStack()}`,
+  retentionInDays: 14,
+  tags: {
+    ...commonTags,
+    Purpose: "lambda-logs",
+  },
+});
+
+// Create ECR repository for video processing container
+const ecrRepository = new aws.ecr.Repository("video-processor-repo", {
+  name: `vision-sync-video-processor-${pulumi.getStack()}`,
+  imageTagMutability: "MUTABLE",
+  
+  imageScanningConfiguration: {
+    scanOnPush: true,
+  },
+  
+  encryptionConfigurations: [{
+    encryptionType: "AES256",
+  }],
+  
+  tags: {
+    ...commonTags,
+    Purpose: "video-processing-container",
+  },
+});
+
+// ECR lifecycle policy
+new aws.ecr.LifecyclePolicy("video-processor-lifecycle", {
+  repository: ecrRepository.name,
+  policy: pulumi.jsonStringify({
+    rules: [
+      {
+        rulePriority: 1,
+        description: "Keep only 10 most recent images",
+        selection: {
+          tagStatus: "any",
+          countType: "imageCountMoreThan",
+          countNumber: 10,
+        },
+        action: {
+          type: "expire",
+        },
+      },
+      {
+        rulePriority: 2,
+        description: "Delete untagged images older than 1 day",
+        selection: {
+          tagStatus: "untagged",
+          countType: "sinceImagePushed",
+          countUnit: "days",
+          countNumber: 1,
+        },
+        action: {
+          type: "expire",
+        },
+      },
+    ],
+  }),
+});
+
+// IAM Roles and Policies
+
+// ECS Task Execution Role
+const ecsExecutionRole = new aws.iam.Role("ecs-execution-role", {
+  name: `vision-sync-ecs-execution-${pulumi.getStack()}`,
+  assumeRolePolicy: pulumi.jsonStringify({
+    Version: "2012-10-17",
+    Statement: [{
+      Action: "sts:AssumeRole",
+      Effect: "Allow",
+      Principal: {
+        Service: "ecs-tasks.amazonaws.com",
+      },
+    }],
+  }),
+  tags: {
+    ...commonTags,
+    Purpose: "ecs-execution",
+  },
+});
+
+// ECS Task Role (for the application)
+const ecsTaskRole = new aws.iam.Role("ecs-task-role", {
+  name: `vision-sync-ecs-task-${pulumi.getStack()}`,
+  assumeRolePolicy: pulumi.jsonStringify({
+    Version: "2012-10-17",
+    Statement: [{
+      Action: "sts:AssumeRole",
+      Effect: "Allow",
+      Principal: {
+        Service: "ecs-tasks.amazonaws.com",
+      },
+    }],
+  }),
+  tags: {
+    ...commonTags,
+    Purpose: "ecs-task",
+  },
+});
+
+// Lambda Execution Role
+const lambdaExecutionRole = new aws.iam.Role("lambda-execution-role", {
+  name: `vision-sync-lambda-${pulumi.getStack()}`,
+  assumeRolePolicy: pulumi.jsonStringify({
+    Version: "2012-10-17",
+    Statement: [{
+      Action: "sts:AssumeRole",
+      Effect: "Allow",
+      Principal: {
+        Service: "lambda.amazonaws.com",
+      },
+    }],
+  }),
+  tags: {
+    ...commonTags,
+    Purpose: "lambda-execution",
+  },
+});
+
+// Attach managed policies to ECS Execution Role
+new aws.iam.RolePolicyAttachment("ecs-execution-policy", {
+  role: ecsExecutionRole.name,
+  policyArn: "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
+});
+
+// Custom policy for ECS Task Role
+const ecsTaskPolicy = new aws.iam.Policy("ecs-task-policy", {
+  name: `vision-sync-ecs-task-policy-${pulumi.getStack()}`,
+  policy: pulumi.all([rawVideosBucket.arn, processedVideosBucket.arn]).apply(([rawArn, processedArn]) =>
+    pulumi.jsonStringify({
+      Version: "2012-10-17",
+      Statement: [
+        {
+          Effect: "Allow",
+          Action: [
+            "s3:GetObject",
+          ],
+          Resource: `${rawArn}/*`,
+        },
+        {
+          Effect: "Allow",
+          Action: [
+            "s3:PutObject",
+            "s3:PutObjectAcl",
+          ],
+          Resource: `${processedArn}/*`,
+        },
+        {
+          Effect: "Allow",
+          Action: [
+            "logs:CreateLogStream",
+            "logs:PutLogEvents",
+          ],
+          Resource: ecsLogGroup.arn,
+        },
+      ],
+    })
+  ),
+});
+
+new aws.iam.RolePolicyAttachment("ecs-task-policy-attachment", {
+  role: ecsTaskRole.name,
+  policyArn: ecsTaskPolicy.arn,
+});
+
+// Lambda execution policy
+const lambdaExecutionPolicy = new aws.iam.Policy("lambda-execution-policy", {
+  name: `vision-sync-lambda-policy-${pulumi.getStack()}`,
+  policy: pulumi.all([
+    videoProcessingQueue.arn,
+    ecsTaskRole.arn,
+    ecsExecutionRole.arn,
+  ]).apply(([sqsArn, taskRoleArn, execRoleArn]) =>
+    pulumi.jsonStringify({
+      Version: "2012-10-17",
+      Statement: [
+        {
+          Effect: "Allow",
+          Action: [
+            "logs:CreateLogGroup",
+            "logs:CreateLogStream",
+            "logs:PutLogEvents",
+          ],
+          Resource: "arn:aws:logs:*:*:*",
+        },
+        {
+          Effect: "Allow",
+          Action: [
+            "sqs:ReceiveMessage",
+            "sqs:DeleteMessage",
+            "sqs:GetQueueAttributes",
+          ],
+          Resource: sqsArn,
+        },
+        {
+          Effect: "Allow",
+          Action: [
+            "ecs:RunTask",
+            "ecs:DescribeTasks",
+          ],
+          Resource: "*",
+        },
+        {
+          Effect: "Allow",
+          Action: "iam:PassRole",
+          Resource: [taskRoleArn, execRoleArn],
+        },
+      ],
+    })
+  ),
+});
+
+new aws.iam.RolePolicyAttachment("lambda-execution-policy-attachment", {
+  role: lambdaExecutionRole.name,
+  policyArn: lambdaExecutionPolicy.arn,
+});
+
+// Create ECS Cluster
+const ecsCluster = new aws.ecs.Cluster("video-processing-cluster", {
+  name: `vision-sync-processing-${pulumi.getStack()}`,
+  
+  settings: [{
+    name: "containerInsights",
+    value: "enabled",
+  }],
+  
+  tags: {
+    ...commonTags,
+    Purpose: "video-processing",
+  },
+});
+
+// Create capacity provider association separately
+new aws.ecs.ClusterCapacityProviders("cluster-capacity-providers", {
+  clusterName: ecsCluster.name,
+  capacityProviders: ["FARGATE"],
+  
+  defaultCapacityProviderStrategies: [{
+    capacityProvider: "FARGATE",
+    weight: 1,
+  }],
+});
+
+// Create ECS Task Definition
+const ecsTaskDefinition = new aws.ecs.TaskDefinition("video-processing-task", {
+  family: `vision-sync-video-processing-${pulumi.getStack()}`,
+  cpu: "2048",
+  memory: "4096",
+  networkMode: "awsvpc",
+  requiresCompatibilities: ["FARGATE"],
+  executionRoleArn: ecsExecutionRole.arn,
+  taskRoleArn: ecsTaskRole.arn,
+  
+  containerDefinitions: pulumi.all([
+    region,
+    ecsLogGroup.name,
+    ecrRepository.repositoryUrl,
+    caller,
+    rawVideosBucket.bucket,
+    processedVideosBucket.bucket,
+  ]).apply(([reg, logGroupName, repoUrl, callerInfo, rawBucket, processedBucket]) =>
+    pulumi.jsonStringify([{
+      name: "video-processor",
+      image: `${callerInfo.accountId}.dkr.ecr.${reg.name}.amazonaws.com/${ecrRepository.name}:latest`,
+      cpu: 2048,
+      memory: 4096,
+      essential: true,
+      
+      logConfiguration: {
+        logDriver: "awslogs",
+        options: {
+          "awslogs-group": logGroupName,
+          "awslogs-region": reg.name,
+          "awslogs-stream-prefix": "ecs",
+        },
+      },
+      
+      environment: [
+        { name: "AWS_DEFAULT_REGION", value: reg.name },
+        { name: "NODE_ENV", value: "production" },
+        { name: "TEMP_DIR", value: "/tmp/video-processing" },
+      ],
+      
+      healthCheck: {
+        command: ["CMD-SHELL", "node -e \"console.log('healthy')\" || exit 1"],
+        interval: 30,
+        timeout: 5,
+        retries: 3,
+        startPeriod: 60,
+      },
+      
+      stopTimeout: 120,
+    }])
+  ),
+  
+  tags: {
+    ...commonTags,
+    Purpose: "video-processing-task",
+  },
+});
+
+// Create Lambda function
+const lambdaFunction = new aws.lambda.Function("ecs-task-trigger", {
+  name: `vision-sync-ecs-trigger-${pulumi.getStack()}`,
+  runtime: "nodejs18.x",
+  
+  // Reference the built Lambda code from the lambda directory
+  code: new pulumi.asset.AssetArchive({
+    ".": new pulumi.asset.FileArchive("../lambda/dist"),
+    "node_modules": new pulumi.asset.FileArchive("../lambda/node_modules"),
+  }),
+  
+  handler: "index.handler",
+  role: lambdaExecutionRole.arn,
+  timeout: 900, // 15 minutes
+  memorySize: 256,
+  
+  environment: {
+    variables: pulumi.all([
+      ecsCluster.name,
+      ecsTaskDefinition.arn,
+      vpc.privateSubnetIds,
+      vpc.vpc.defaultSecurityGroupId,
+      processedVideosBucket.bucket,
+      region,
+    ]).apply(([clusterName, taskDefArn, subnetIds, sgId, bucket, reg]) => ({
+      ECS_CLUSTER: clusterName,
+      ECS_TASK_DEFINITION: taskDefArn,
+      SUBNET_IDS: subnetIds.join(','),
+      SECURITY_GROUP_ID: sgId,
+      PROCESSED_BUCKET: bucket,
+      AWS_REGION: reg.name,
+    })),
+  },
+  
+  deadLetterConfig: {
+    targetArn: videoProcessingDLQ.arn,
+  },
+  
+  tags: {
+    ...commonTags,
+    Purpose: "video-processing-trigger",
+  },
+});
+
+// Create explicit dependency using resource options
+const lambdaWithDependency = new aws.lambda.Function("ecs-task-trigger-with-deps", {
+  name: `vision-sync-ecs-trigger-${pulumi.getStack()}`,
+  runtime: "nodejs18.x",
+  
+  // Reference the built Lambda code from the lambda directory
+  code: new pulumi.asset.AssetArchive({
+    ".": new pulumi.asset.FileArchive("../lambda/dist"),
+    "node_modules": new pulumi.asset.FileArchive("../lambda/node_modules"),
+  }),
+  
+  handler: "index.handler",
+  role: lambdaExecutionRole.arn,
+  timeout: 900, // 15 minutes
+  memorySize: 256,
+  
+  environment: {
+    variables: pulumi.all([
+      ecsCluster.name,
+      ecsTaskDefinition.arn,
+      vpc.privateSubnetIds,
+      vpc.vpc.defaultSecurityGroupId,
+      processedVideosBucket.bucket,
+      region,
+    ]).apply(([clusterName, taskDefArn, subnetIds, sgId, bucket, reg]) => ({
+      ECS_CLUSTER: clusterName,
+      ECS_TASK_DEFINITION: taskDefArn,
+      SUBNET_IDS: subnetIds.join(','),
+      SECURITY_GROUP_ID: sgId,
+      PROCESSED_BUCKET: bucket,
+      AWS_REGION: reg.name,
+    })),
+  },
+  
+  deadLetterConfig: {
+    targetArn: videoProcessingDLQ.arn,
+  },
+  
+  tags: {
+    ...commonTags,
+    Purpose: "video-processing-trigger",
+  },
+}, { dependsOn: [lambdaLogGroup] }); // Fixed: Move dependsOn to resource options
+
+// Create SQS trigger for Lambda
+const sqsEventSourceMapping = new aws.lambda.EventSourceMapping("sqs-lambda-trigger", {
+  eventSourceArn: videoProcessingQueue.arn,
+  functionName: lambdaWithDependency.name, // Use the function with proper dependencies
+  batchSize: 1,
+  maximumBatchingWindowInSeconds: 5,
+  
+  functionResponseTypes: ["ReportBatchItemFailures"],
+});
+
+// Grant SQS permission to invoke Lambda
+new aws.lambda.Permission("sqs-invoke-lambda", {
+  action: "lambda:InvokeFunction",
+  function: lambdaWithDependency.name,
+  principal: "sqs.amazonaws.com",
+  sourceArn: videoProcessingQueue.arn,
+});
+
+// CloudWatch Alarms for monitoring
+const lambdaErrorAlarm = new aws.cloudwatch.MetricAlarm("lambda-error-alarm", {
+  name: `vision-sync-lambda-errors-${pulumi.getStack()}`,
+  alarmDescription: "Lambda function error rate is too high",
+  
+  metricName: "Errors",
+  namespace: "AWS/Lambda",
+  statistic: "Sum",
+  period: 300,
+  evaluationPeriods: 2,
+  threshold: 5,
+  comparisonOperator: "GreaterThanThreshold",
+  
+  dimensions: {
+    FunctionName: lambdaWithDependency.name,
+  },
+  
+  tags: {
+    ...commonTags,
+    Purpose: "monitoring",
+  },
+});
+
+const sqsQueueDepthAlarm = new aws.cloudwatch.MetricAlarm("sqs-queue-depth-alarm", {
+  name: `vision-sync-sqs-depth-${pulumi.getStack()}`,
+  alarmDescription: "SQS queue depth is too high",
+  
+  metricName: "ApproximateNumberOfVisibleMessages",
+  namespace: "AWS/SQS",
+  statistic: "Average",
+  period: 300,
+  evaluationPeriods: 3,
+  threshold: 10,
+  comparisonOperator: "GreaterThanThreshold",
+  
+  dimensions: {
+    QueueName: videoProcessingQueue.name,
+  },
+  
+  tags: {
+    ...commonTags,
+    Purpose: "monitoring",
+  },
+});
+
+// Export important values
+export const vpcId = vpc.vpcId;
+export const publicSubnetIds = vpc.publicSubnetIds;
+export const privateSubnetIds = vpc.privateSubnetIds;
+export const rawVideosBucketName = rawVideosBucket.bucket;
+export const rawVideosBucketArn = rawVideosBucket.arn;
+export const processedVideosBucketName = processedVideosBucket.bucket;
+export const processedVideosBucketArn = processedVideosBucket.arn;
+export const videoProcessingQueueUrl = videoProcessingQueue.url;
+export const videoProcessingQueueArn = videoProcessingQueue.arn;
+export const videoProcessingDLQUrl = videoProcessingDLQ.url;
+export const ecsClusterName = ecsCluster.name;
+export const ecsClusterArn = ecsCluster.arn;
+export const ecsTaskDefinitionArn = ecsTaskDefinition.arn;
+export const lambdaFunctionName = lambdaWithDependency.name; // Updated to use the corrected function
+export const lambdaFunctionArn = lambdaWithDependency.arn;
+export const ecrRepositoryUrl = ecrRepository.repositoryUrl;
+export const ecrRepositoryName = ecrRepository.name;
+export const accountId = caller.then(c => c.accountId);
