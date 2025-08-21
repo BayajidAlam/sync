@@ -1,7 +1,94 @@
-# Remove the .env file from Git tracking
-git rm --cached server/.env
+# Create a comprehensive .gitignore at project root
+cat > .gitignore << 'EOF'
+# Environment variables - NEVER commit these
+.env
+.env.*
+.environment
+.env.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.production
+.env.production.local
+.env.staging
+**/.env
+**/.env.*
+**/.environment
+**/config/.env*
+**/config/environment*
 
-# Remove from all previous commits
-git filter-branch --force --index-filter \
-  'git rm --cached --ignore-unmatch server/.env' \
-  --prune-empty --tag-name-filter cat -- --all
+# AWS credentials
+.aws/
+**/.aws/
+**/credentials
+**/config
+
+# Dependencies
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Build outputs
+dist/
+**/dist/
+build/
+**/build/
+.next/
+out/
+
+# Logs
+*.log
+logs/
+**/logs/
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage
+coverage/
+**/coverage/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+**/tmp/
+**/temp/
+
+# Pulumi sensitive files
+Pulumi.*.yaml
+**/Pulumi.*.yaml
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Certificate files
+*.pem
+*.key
+*.crt
+*.cert
+EOF
