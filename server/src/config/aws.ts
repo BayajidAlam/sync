@@ -3,17 +3,17 @@ import { SQSClient } from '@aws-sdk/client-sqs'
 import { config } from './env.js'
 
 export const s3Client = new S3Client({
-  region: config.aws.region,
+  region: config.AWS_REGION,
   credentials: {
-    accessKeyId: config.aws.accessKeyId,
-    secretAccessKey: config.aws.secretAccessKey,
+    accessKeyId: config.AWS_ACCESS_KEY_ID,
+    secretAccessKey: config.AWS_SECRET_ACCESS_KEY,
   },
 })
 
 export const sqsClient = new SQSClient({
-  region: config.aws.region,
+  region: config.AWS_REGION,
   credentials: {
-    accessKeyId: config.aws.accessKeyId,
-    secretAccessKey: config.aws.secretAccessKey,
+    accessKeyId: config.AWS_ACCESS_KEY_ID,
+    secretAccessKey: config.AWS_SECRET_ACCESS_KEY,
   },
 })

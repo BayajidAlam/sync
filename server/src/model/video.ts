@@ -1,8 +1,10 @@
+// server/src/model/video.ts - FIXED: Allow UUID strings as _id
+
 import mongoose, { Schema, Document } from 'mongoose'
 import { VideoStatus } from '../types/index.js'
 
 export interface IVideo extends Document {
-  _id: string
+  _id: string  // Keep as string to allow UUIDs
   title: string
   description?: string
   filename: string
@@ -17,6 +19,12 @@ export interface IVideo extends Document {
 }
 
 const VideoSchema = new Schema<IVideo>({
+  // 🔥 FIX: Override _id to accept string (UUID) instead of ObjectId
+  _id: {
+    type: String,  // Changed from ObjectId to String
+    required: true
+  },
+  
   title: {
     type: String,
     required: true,
@@ -56,11 +64,12 @@ const VideoSchema = new Schema<IVideo>({
     type: String,
   },
 }, {
+  // 🔥 FIX: Disable auto ObjectId generation since we're using custom string IDs
+  _id: false,  // Disable automatic _id generation
   timestamps: true, // Automatically adds createdAt and updatedAt
   toJSON: {
     transform: (doc, ret) => {
       ret.id = ret._id
-      delete ret._id
       delete ret.__v
       return ret
     }

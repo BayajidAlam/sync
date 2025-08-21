@@ -54,7 +54,5 @@ process.on('SIGTERM', async () => {
 })
 
 export async function initializeDatabase() {
-  // MongoDB doesn't need explicit table creation like PostgreSQL
-  // Mongoose will create collections automatically when first document is inserted
   console.log('✅ MongoDB initialized (collections will be created automatically)')
 }

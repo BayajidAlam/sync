@@ -1,23 +1,30 @@
-import { PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import {
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+} from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { s3Client } from '../config/aws.js'
 import { config } from '../config/env.js'
 import { v4 as uuidv4 } from 'uuid'
 
 export class S3Service {
-  async generatePresignedUrl(fileName: string, fileType: string): Promise<{ presignedUrl: string; videoId: string }> {
+  async generatePresignedUrl(
+    fileName: string,
+    fileType: string
+  ): Promise<{ presignedUrl: string; videoId: string }> {
     const videoId = uuidv4()
     const key = `videos/${videoId}/${fileName}`
 
     const command = new PutObjectCommand({
-      Bucket: config.s3.bucketRaw,
+      Bucket: config.S3_BUCKET_RAW,
       Key: key,
       ContentType: fileType,
     })
 
     try {
       const presignedUrl = await getSignedUrl(s3Client, command, {
-        expiresIn: 3600, // 1 hour
+        expiresIn: 3600,
       })
 
       return { presignedUrl, videoId }
@@ -29,15 +36,15 @@ export class S3Service {
 
   async getVideoUrl(videoId: string, fileName: string): Promise<string> {
     const key = `videos/${videoId}/${fileName}`
-    
+
     const command = new GetObjectCommand({
-      Bucket: config.s3.bucketRaw,
+      Bucket: config.S3_BUCKET_RAW,
       Key: key,
     })
 
     try {
       return await getSignedUrl(s3Client, command, {
-        expiresIn: 3600, // 1 hour
+        expiresIn: 3600,
       })
     } catch (error) {
       console.error('Error getting video URL:', error)
@@ -45,17 +52,20 @@ export class S3Service {
     }
   }
 
-  async getProcessedVideoUrl(videoId: string, fileName: string): Promise<string> {
+  async getProcessedVideoUrl(
+    videoId: string,
+    fileName: string
+  ): Promise<string> {
     const key = `${videoId}/${fileName}`
-    
+
     const command = new GetObjectCommand({
-      Bucket: config.s3.bucketProcessed,
+      Bucket: config.S3_BUCKET_PROCESSED,
       Key: key,
     })
 
     try {
       return await getSignedUrl(s3Client, command, {
-        expiresIn: 3600, // 1 hour
+        expiresIn: 3600,
       })
     } catch (error) {
       console.error('Error getting processed video URL:', error)
@@ -65,9 +75,9 @@ export class S3Service {
 
   async deleteVideo(videoId: string, fileName: string): Promise<void> {
     const key = `videos/${videoId}/${fileName}`
-    
+
     const command = new DeleteObjectCommand({
-      Bucket: config.s3.bucketRaw,
+      Bucket: config.S3_BUCKET_RAW,
       Key: key,
     })
 
@@ -80,11 +90,11 @@ export class S3Service {
   }
 
   getManifestUrl(videoId: string): string {
-    return `https://${config.s3.bucketProcessed}.s3.${config.aws.region}.amazonaws.com/${videoId}/manifest.mpd`
+    return `https://${config.S3_BUCKET_PROCESSED}.s3.${config.AWS_REGION}.amazonaws.com/${videoId}/manifest.mpd`
   }
 
   getSegmentUrl(videoId: string, segment: string): string {
-    return `https://${config.s3.bucketProcessed}.s3.${config.aws.region}.amazonaws.com/${videoId}/${segment}`
+    return `https://${config.S3_BUCKET_PROCESSED}.s3.${config.AWS_REGION}.amazonaws.com/${videoId}/${segment}`
   }
 }
 

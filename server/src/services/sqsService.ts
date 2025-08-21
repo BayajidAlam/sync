@@ -12,7 +12,7 @@ export class SQSService {
     }
 
     const command = new SendMessageCommand({
-      QueueUrl: config.sqs.queueUrl,
+      QueueUrl: config.SQS_QUEUE_URL,
       MessageBody: JSON.stringify(message),
       MessageAttributes: {
         videoId: {

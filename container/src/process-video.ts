@@ -138,7 +138,9 @@ export class VideoProcessor {
       console.error('Webhook failed:', {
         url: this.env.webhookUrl,
         error: webhookError instanceof Error ? webhookError.message : 'Unknown error',
+        //@ts-ignore
         status: axios.isAxiosError(webhookError) ? webhookError.response?.status : undefined,
+        //@ts-ignore
         data: axios.isAxiosError(webhookError) ? webhookError.response?.data : undefined
       });
     }

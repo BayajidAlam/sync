@@ -138,7 +138,7 @@ export class VideoService {
 
       // Send to processing queue
       await sqsService.sendVideoProcessingMessage(
-        config.s3.bucketRaw,
+        config.S3_BUCKET_RAW,
         `videos/${videoId}/${video.filename}`,
         videoId
       )

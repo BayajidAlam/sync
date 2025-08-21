@@ -35,6 +35,7 @@ export interface ApiResponse<T> {
 }
 
 export interface VideoUpload {
+  error: any
   file: File
   progress: number
   status: VideoStatus
