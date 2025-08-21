@@ -28,30 +28,30 @@ const vpc = new awsx.ec2.Vpc("vision-sync-vpc", {
   },
 });
 
-// Create S3 bucket for raw videos - OPTIMIZED: Enhanced lifecycle
+// Create S3 bucket for raw videos - WORKING CORS CONFIG
 const rawVideosBucket = new aws.s3.Bucket("raw-videos-bucket", {
   bucket: `vision-sync-raw-videos-${pulumi.getStack()}-${Math.random()
     .toString(36)
     .substring(7)}`,
-  forceDestroy: true, // Allow destruction in dev environments
+  forceDestroy: true,
 
   corsRules: [
     {
       allowedHeaders: ["*"],
-      allowedMethods: ["GET", "PUT", "POST", "OPTIONS"],
-      allowedOrigins: ["*"],
+      allowedMethods: ["GET", "PUT", "POST", "DELETE", "HEAD"], 
+      allowedOrigins: ["*"], 
+      exposeHeaders: ["ETag"], 
       maxAgeSeconds: 3000,
     },
   ],
 
-  // COST OPTIMIZATION: Delete raw videos after processing
   lifecycleRules: [
     {
       id: "cleanup-after-processing",
       enabled: true,
       abortIncompleteMultipartUploadDays: 1,
       expiration: {
-        days: 7, // Delete raw videos after 7 days (saves $11/month)
+        days: 7,
       },
     },
   ],
@@ -62,7 +62,7 @@ const rawVideosBucket = new aws.s3.Bucket("raw-videos-bucket", {
   },
 });
 
-// Create S3 bucket for processed videos - OPTIMIZED: Enhanced lifecycle
+// Create S3 bucket for processed videos - WORKING CORS CONFIG  
 const processedVideosBucket = new aws.s3.Bucket("processed-videos-bucket", {
   bucket: `vision-sync-processed-videos-${pulumi.getStack()}-${Math.random()
     .toString(36)
@@ -72,13 +72,13 @@ const processedVideosBucket = new aws.s3.Bucket("processed-videos-bucket", {
   corsRules: [
     {
       allowedHeaders: ["*"],
-      allowedMethods: ["GET", "HEAD"],
+      allowedMethods: ["GET", "PUT", "POST", "DELETE", "HEAD"], 
       allowedOrigins: ["*"],
-      maxAgeSeconds: 86400, // 24 hours for processed content
+      exposeHeaders: ["ETag"], 
+      maxAgeSeconds: 86400,
     },
   ],
 
-  // COST OPTIMIZATION: Enhanced storage tier transitions
   lifecycleRules: [
     {
       id: "cost-optimization",
@@ -86,15 +86,15 @@ const processedVideosBucket = new aws.s3.Bucket("processed-videos-bucket", {
       transitions: [
         {
           days: 30,
-          storageClass: "STANDARD_IA", // Move to IA after 30 days
+          storageClass: "STANDARD_IA",
         },
         {
           days: 90,
-          storageClass: "GLACIER", // Move to Glacier after 90 days
+          storageClass: "GLACIER",
         },
         {
           days: 365,
-          storageClass: "DEEP_ARCHIVE", // Move to Deep Archive after 1 year
+          storageClass: "DEEP_ARCHIVE",
         },
       ],
       abortIncompleteMultipartUploadDays: 1,
@@ -106,6 +106,7 @@ const processedVideosBucket = new aws.s3.Bucket("processed-videos-bucket", {
     Purpose: "processed-video-storage",
   },
 });
+
 
 // Block public access on both buckets
 new aws.s3.BucketPublicAccessBlock("raw-videos-bucket-pab", {
