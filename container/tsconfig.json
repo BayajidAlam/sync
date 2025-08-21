@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2018",
     "module": "commonjs",
-    "lib": ["ES2020"],
+    "lib": ["ES2018"],
     "moduleResolution": "node",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
@@ -18,10 +18,10 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "declaration": true,
+    "declaration": false,
     "outDir": "./dist",
     "rootDir": "./src",
-    "sourceMap": true
+    "sourceMap": false
   },
   "include": [
     "src/**/*"

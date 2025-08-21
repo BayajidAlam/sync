@@ -67,6 +67,7 @@ class VideoProcessor {
         }
     }
     async sendWebhook(status, manifestUrl) {
+        var _a, _b;
         if (!this.env.webhookUrl) {
             console.log('No webhook URL configured, skipping webhook');
             return;
@@ -95,9 +96,9 @@ class VideoProcessor {
                 url: this.env.webhookUrl,
                 error: webhookError instanceof Error ? webhookError.message : 'Unknown error',
                 //@ts-ignore
-                status: axios_1.default.isAxiosError(webhookError) ? webhookError.response?.status : undefined,
+                status: axios_1.default.isAxiosError(webhookError) ? (_a = webhookError.response) === null || _a === void 0 ? void 0 : _a.status : undefined,
                 //@ts-ignore
-                data: axios_1.default.isAxiosError(webhookError) ? webhookError.response?.data : undefined
+                data: axios_1.default.isAxiosError(webhookError) ? (_b = webhookError.response) === null || _b === void 0 ? void 0 : _b.data : undefined
             });
         }
     }
@@ -131,6 +132,7 @@ class VideoProcessor {
             maxTime: this.env.maxProcessingTime,
         });
         return new Promise((resolve, reject) => {
+            var _a, _b;
             // COST OPTIMIZATION: Optimized FFmpeg arguments for faster processing
             const ffmpegArgs = [
                 '-i', inputPath,
@@ -160,11 +162,11 @@ class VideoProcessor {
                 '-map', '0:a?', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000',
                 // COST OPTIMIZATION: Encoding settings based on instance type
                 '-g', '48', '-sc_threshold', '0', '-keyint_min', '48',
-                '-preset', this.env.ffmpegPreset, // 'fast' for regular, 'medium' for Spot
+                '-preset', this.env.ffmpegPreset,
                 '-profile:v', 'high', '-level', '4.0',
                 // COST OPTIMIZATION: Optimized for processing speed vs quality
                 ...(this.env.instanceType === 'spot' ? [
-                    '-crf', '25', // Slightly lower quality for Spot instances
+                    '-crf', '25',
                     '-tune', 'fastdecode', // Optimize for faster decoding
                 ] : [
                     '-crf', '23', // Higher quality for regular instances
@@ -172,7 +174,7 @@ class VideoProcessor {
                 // DASH settings - optimized segment size for cost
                 '-adaptation_sets', this.env.processingPriority === 'low' ? 'id=0,streams=v id=1,streams=a' : 'id=0,streams=v id=1,streams=a',
                 '-f', 'dash',
-                '-seg_duration', this.env.enableBatchMode ? '6' : '4', // Longer segments for batch mode
+                '-seg_duration', this.env.enableBatchMode ? '6' : '4',
                 '-frag_duration', this.env.enableBatchMode ? '6' : '4',
                 '-min_seg_duration', this.env.enableBatchMode ? '6' : '4',
                 '-use_template', '1',
@@ -188,10 +190,10 @@ class VideoProcessor {
             });
             let lastProgressTime = 0;
             const progressInterval = this.env.enableBatchMode ? 10000 : 5000; // Less frequent logging in batch mode
-            ffmpeg.stdout?.on('data', (data) => {
+            (_a = ffmpeg.stdout) === null || _a === void 0 ? void 0 : _a.on('data', (data) => {
                 // FFmpeg writes progress to stderr, not stdout
             });
-            ffmpeg.stderr?.on('data', (data) => {
+            (_b = ffmpeg.stderr) === null || _b === void 0 ? void 0 : _b.on('data', (data) => {
                 const output = data.toString();
                 // Parse and log progress
                 const progress = this.parseFFmpegProgress(output);
@@ -252,7 +254,7 @@ class VideoProcessor {
                     Body: fileContent,
                     ContentType: contentType,
                     // COST OPTIMIZATION: Set appropriate storage class and metadata
-                    StorageClass: 'STANDARD', // Will be moved to cheaper tiers by lifecycle policy
+                    StorageClass: 'STANDARD',
                     Metadata: {
                         'video-id': this.env.videoId,
                         'processed-by': 'vision-sync-processor',
@@ -356,4 +358,3 @@ processor.process().catch((error) => {
     console.error('Fatal error:', error);
     process.exit(1);
 });
-//# sourceMappingURL=process-video.js.map

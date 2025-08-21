@@ -8,15 +8,15 @@ RUN apk add --no-cache \
     make \
     g++ \
     curl \
-    && npm install -g typescript
+    && npm install -g typescript@4.9.5
 
 # Build stage
 FROM base AS builder
 
 WORKDIR /app
 
-# Copy package files first for better Docker layer caching
-COPY package*.json ./
+# Copy package files AND tsconfig.json
+COPY package.json ./
 COPY tsconfig.json ./
 
 # Install all dependencies (including dev dependencies)
@@ -34,10 +34,10 @@ FROM base AS production
 WORKDIR /app
 
 # Copy package files
-COPY package*.json ./
+COPY package.json ./
 
-# Install only production dependencies
-RUN npm install --production && npm cache clean --force
+# Install only production dependencies without lock file
+RUN npm install --production --no-package-lock && npm cache clean --force
 
 # Copy built JavaScript files from builder stage
 COPY --from=builder /app/dist/ ./dist/
@@ -64,5 +64,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 ENV NODE_ENV=production
 ENV TEMP_DIR=/tmp/video-processing
 
-# Run the application
+# Override the ffmpeg entrypoint and run the application
+ENTRYPOINT []
 CMD ["npm", "start"]

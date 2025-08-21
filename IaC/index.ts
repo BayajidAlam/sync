@@ -38,7 +38,7 @@ const rawVideosBucket = new aws.s3.Bucket("raw-videos-bucket", {
   corsRules: [
     {
       allowedHeaders: ["*"],
-      allowedMethods: ["GET", "PUT", "POST"],
+      allowedMethods: ["GET", "PUT", "POST", "OPTIONS"],
       allowedOrigins: ["*"],
       maxAgeSeconds: 3000,
     },
@@ -421,54 +421,52 @@ new aws.iam.RolePolicyAttachment("ecs-task-policy-attachment", {
   policyArn: ecsTaskPolicy.arn,
 });
 
-
 // Lambda execution policy
 const lambdaExecutionPolicy = new aws.iam.Policy("lambda-execution-policy", {
   name: `vision-sync-lambda-policy-${pulumi.getStack()}`,
-  policy: pulumi.all([
-    videoProcessingQueue.arn,
-    videoProcessingDLQ.arn,  // ADD: Include DLQ ARN
-    ecsTaskRole.arn,
-    ecsExecutionRole.arn,
-  ]).apply(([sqsArn, dlqArn, taskRoleArn, execRoleArn]) =>  // ADD: dlqArn parameter
-    pulumi.jsonStringify({
-      Version: "2012-10-17",
-      Statement: [
-        {
-          Effect: "Allow",
-          Action: [
-            "logs:CreateLogGroup",
-            "logs:CreateLogStream",
-            "logs:PutLogEvents",
-          ],
-          Resource: "arn:aws:logs:*:*:*",
-        },
-        {
-          Effect: "Allow",
-          Action: [
-            "sqs:ReceiveMessage",
-            "sqs:DeleteMessage",
-            "sqs:GetQueueAttributes",
-            "sqs:SendMessage",  
-          ],
-          Resource: [sqsArn, dlqArn],
-        },
-        {
-          Effect: "Allow",
-          Action: [
-            "ecs:RunTask",
-            "ecs:DescribeTasks",
-          ],
-          Resource: "*",
-        },
-        {
-          Effect: "Allow",
-          Action: "iam:PassRole",
-          Resource: [taskRoleArn, execRoleArn],
-        },
-      ],
-    })
-  ),
+  policy: pulumi
+    .all([
+      videoProcessingQueue.arn,
+      videoProcessingDLQ.arn,
+      ecsTaskRole.arn,
+      ecsExecutionRole.arn,
+    ])
+    .apply(([sqsArn, dlqArn, taskRoleArn, execRoleArn]) =>
+      pulumi.jsonStringify({
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: [
+              "logs:CreateLogGroup",
+              "logs:CreateLogStream",
+              "logs:PutLogEvents",
+            ],
+            Resource: "arn:aws:logs:*:*:*",
+          },
+          {
+            Effect: "Allow",
+            Action: [
+              "sqs:ReceiveMessage",
+              "sqs:DeleteMessage",
+              "sqs:GetQueueAttributes",
+              "sqs:SendMessage",
+            ],
+            Resource: [sqsArn, dlqArn],
+          },
+          {
+            Effect: "Allow",
+            Action: ["ecs:RunTask", "ecs:DescribeTasks", "ecs:TagResource"],
+            Resource: "*",
+          },
+          {
+            Effect: "Allow",
+            Action: "iam:PassRole",
+            Resource: [taskRoleArn, execRoleArn],
+          },
+        ],
+      })
+    ),
 });
 
 new aws.iam.RolePolicyAttachment("lambda-execution-policy-attachment", {
@@ -545,12 +543,14 @@ const ecsTaskDefinition = new aws.ecs.TaskDefinition("video-processing-task", {
               "awslogs-stream-prefix": "ecs",
             },
           },
-
           environment: [
             { name: "AWS_DEFAULT_REGION", value: reg.name },
             { name: "NODE_ENV", value: "production" },
             { name: "TEMP_DIR", value: "/tmp/video-processing" },
-            // COST OPTIMIZATION: Default to cost-optimized settings
+            { name: "VIDEO_BUCKET", value: rawBucket },
+            { name: "OUTPUT_BUCKET", value: processedBucket },
+            { name: "VIDEO_FILE_NAME", value: "" },
+            { name: "VIDEO_ID", value: "" },
             { name: "INSTANCE_TYPE", value: "spot" },
             { name: "PROCESSING_PRIORITY", value: "low" },
             { name: "ENABLE_BATCH_MODE", value: "true" },
@@ -558,7 +558,6 @@ const ecsTaskDefinition = new aws.ecs.TaskDefinition("video-processing-task", {
             { name: "FFMPEG_THREADS", value: "2" },
             { name: "MAX_PROCESSING_TIME", value: "1800" },
           ],
-
           healthCheck: {
             command: [
               "CMD-SHELL",
