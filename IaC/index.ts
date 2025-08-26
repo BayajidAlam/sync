@@ -38,9 +38,9 @@ const rawVideosBucket = new aws.s3.Bucket("raw-videos-bucket", {
   corsRules: [
     {
       allowedHeaders: ["*"],
-      allowedMethods: ["GET", "PUT", "POST", "DELETE", "HEAD"], 
-      allowedOrigins: ["*"], 
-      exposeHeaders: ["ETag"], 
+      allowedMethods: ["GET", "PUT", "POST", "DELETE", "HEAD"],
+      allowedOrigins: ["*"],
+      exposeHeaders: ["ETag"],
       maxAgeSeconds: 3000,
     },
   ],
@@ -62,7 +62,7 @@ const rawVideosBucket = new aws.s3.Bucket("raw-videos-bucket", {
   },
 });
 
-// Create S3 bucket for processed videos - WORKING CORS CONFIG  
+// Create S3 bucket for processed videos - WORKING CORS CONFIG
 const processedVideosBucket = new aws.s3.Bucket("processed-videos-bucket", {
   bucket: `vision-sync-processed-videos-${pulumi.getStack()}-${Math.random()
     .toString(36)
@@ -72,9 +72,9 @@ const processedVideosBucket = new aws.s3.Bucket("processed-videos-bucket", {
   corsRules: [
     {
       allowedHeaders: ["*"],
-      allowedMethods: ["GET", "PUT", "POST", "DELETE", "HEAD"], 
+      allowedMethods: ["GET", "PUT", "POST", "DELETE", "HEAD"],
       allowedOrigins: ["*"],
-      exposeHeaders: ["ETag"], 
+      exposeHeaders: ["ETag"],
       maxAgeSeconds: 86400,
     },
   ],
@@ -106,7 +106,6 @@ const processedVideosBucket = new aws.s3.Bucket("processed-videos-bucket", {
     Purpose: "processed-video-storage",
   },
 });
-
 
 // Block public access on both buckets
 new aws.s3.BucketPublicAccessBlock("raw-videos-bucket-pab", {
@@ -316,8 +315,6 @@ new aws.ecr.LifecyclePolicy("video-processor-lifecycle", {
   }),
 });
 
-// IAM Roles and Policies
-
 // ECS Task Execution Role
 const ecsExecutionRole = new aws.iam.Role("ecs-execution-role", {
   name: `vision-sync-ecs-execution-${pulumi.getStack()}`,
@@ -523,56 +520,72 @@ const ecsTaskDefinition = new aws.ecs.TaskDefinition("video-processing-task", {
     .all([
       region,
       ecsLogGroup.name,
-      ecrRepository.repositoryUrl, // FIXED: Use repositoryUrl instead of building long string
+      ecrRepository.repositoryUrl,
       rawVideosBucket.bucket,
       processedVideosBucket.bucket,
+      distribution.domainName,
     ])
-    .apply(([reg, logGroupName, repoUrl, rawBucket, processedBucket]) =>
-      pulumi.jsonStringify([
-        {
-          name: "video-processor",
-          image: `${repoUrl}:latest`, // FIXED: Much shorter image name
-          cpu: 2048,
-          memory: 4096,
-          essential: true,
+    .apply(
+      ([
+        reg,
+        logGroupName,
+        repoUrl,
+        rawBucket,
+        processedBucket,
+        cloudfrontDomain,
+      ]) =>
+        pulumi.jsonStringify([
+          {
+            name: "video-processor",
+            image: `${repoUrl}:latest`, // FIXED: Much shorter image name
+            cpu: 2048,
+            memory: 4096,
+            essential: true,
 
-          logConfiguration: {
-            logDriver: "awslogs",
-            options: {
-              "awslogs-group": logGroupName,
-              "awslogs-region": reg.name,
-              "awslogs-stream-prefix": "ecs",
+            logConfiguration: {
+              logDriver: "awslogs",
+              options: {
+                "awslogs-group": logGroupName,
+                "awslogs-region": reg.name,
+                "awslogs-stream-prefix": "ecs",
+              },
             },
-          },
-          environment: [
-            { name: "AWS_DEFAULT_REGION", value: reg.name },
-            { name: "NODE_ENV", value: "production" },
-            { name: "TEMP_DIR", value: "/tmp/video-processing" },
-            { name: "VIDEO_BUCKET", value: rawBucket },
-            { name: "OUTPUT_BUCKET", value: processedBucket },
-            { name: "VIDEO_FILE_NAME", value: "" },
-            { name: "VIDEO_ID", value: "" },
-            { name: "INSTANCE_TYPE", value: "spot" },
-            { name: "PROCESSING_PRIORITY", value: "low" },
-            { name: "ENABLE_BATCH_MODE", value: "true" },
-            { name: "FFMPEG_PRESET", value: "fast" },
-            { name: "FFMPEG_THREADS", value: "2" },
-            { name: "MAX_PROCESSING_TIME", value: "1800" },
-          ],
-          healthCheck: {
-            command: [
-              "CMD-SHELL",
-              "node -e \"console.log('healthy')\" || exit 1",
-            ],
-            interval: 30,
-            timeout: 5,
-            retries: 3,
-            startPeriod: 60,
-          },
+            environment: [
+              { name: "AWS_REGION", value: reg.name },
+              { name: "NODE_ENV", value: "production" },
+              { name: "TEMP_DIR", value: "/tmp/video-processing" },
+              { name: "VIDEO_BUCKET", value: rawBucket },
+              { name: "OUTPUT_BUCKET", value: processedBucket },
+              { name: "VIDEO_FILE_NAME", value: "" },
+              { name: "VIDEO_ID", value: "" },
+              {
+                name: "WEBHOOK_URL",
+                value: "http://localhost:5000/api/webhook/processing-complete",
+              },
+              { name: "CLOUDFRONT_DOMAIN", value: cloudfrontDomain },
+              { name: "CLOUDFRONT_URL", value: `https://${cloudfrontDomain}` },
 
-          stopTimeout: 120,
-        },
-      ])
+              { name: "INSTANCE_TYPE", value: "spot" },
+              { name: "PROCESSING_PRIORITY", value: "low" },
+              { name: "ENABLE_BATCH_MODE", value: "true" },
+              { name: "FFMPEG_PRESET", value: "fast" },
+              { name: "FFMPEG_THREADS", value: "2" },
+              { name: "MAX_PROCESSING_TIME", value: "1800" },
+            ],
+            healthCheck: {
+              command: [
+                "CMD-SHELL",
+                "node -e \"console.log('healthy')\" || exit 1",
+              ],
+              interval: 30,
+              timeout: 5,
+              retries: 3,
+              startPeriod: 60,
+            },
+
+            stopTimeout: 120,
+          },
+        ])
     ),
 
   tags: {
@@ -700,6 +713,152 @@ const sqsQueueDepthAlarm = new aws.cloudwatch.MetricAlarm(
   }
 );
 
+// ==== BACKEND EC2 INSTANCE ====
+
+// Get Ubuntu AMI
+const ubuntu = aws.ec2.getAmi({
+  mostRecent: true,
+  owners: ["099720109477"], // Canonical
+  filters: [
+    {
+      name: "name",
+      values: ["ubuntu/images/hvm-ssd/ubuntu-22.04-amd64-server-*"],
+    },
+  ],
+});
+
+// Security group for backend
+const backendSg = new aws.ec2.SecurityGroup("backend-sg", {
+  name: `vision-sync-backend-sg-${pulumi.getStack()}`,
+  vpcId: vpc.vpcId,
+  ingress: [
+    { protocol: "tcp", fromPort: 22, toPort: 22, cidrBlocks: ["0.0.0.0/0"] },
+    { protocol: "tcp", fromPort: 80, toPort: 80, cidrBlocks: ["0.0.0.0/0"] },
+    {
+      protocol: "tcp",
+      fromPort: 5000,
+      toPort: 5000,
+      cidrBlocks: ["0.0.0.0/0"],
+    },
+  ],
+  egress: [
+    { protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] },
+  ],
+  tags: commonTags,
+});
+
+// Key pair for EC2
+const backendKey = new aws.ec2.KeyPair("backend-key", {
+  keyName: `vision-sync-backend-${pulumi.getStack()}`,
+  publicKey: config.require("sshPublicKey"),
+  tags: commonTags,
+});
+
+// IAM role for backend instance
+const backendRole = new aws.iam.Role("backend-role", {
+  assumeRolePolicy: pulumi.jsonStringify({
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Action: "sts:AssumeRole",
+        Effect: "Allow",
+        Principal: { Service: "ec2.amazonaws.com" },
+      },
+    ],
+  }),
+  tags: commonTags,
+});
+
+// IAM policy for backend
+const backendPolicy = new aws.iam.Policy("backend-policy", {
+  policy: pulumi
+    .all([
+      rawVideosBucket.arn,
+      processedVideosBucket.arn,
+      videoProcessingQueue.arn,
+      ecrRepository.arn,
+    ])
+    .apply(([rawArn, processedArn, queueArn, ecrArn]) =>
+      pulumi.jsonStringify({
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: ["s3:*"],
+            Resource: [
+              `${rawArn}/*`,
+              `${processedArn}/*`,
+              rawArn,
+              processedArn,
+            ],
+          },
+          {
+            Effect: "Allow",
+            Action: ["sqs:*"],
+            Resource: queueArn,
+          },
+          {
+            Effect: "Allow",
+            Action: [
+              "ecr:GetAuthorizationToken",
+              "ecr:BatchCheckLayerAvailability",
+              "ecr:GetDownloadUrlForLayer",
+              "ecr:BatchGetImage",
+            ],
+            Resource: "*",
+          },
+        ],
+      })
+    ),
+});
+
+new aws.iam.RolePolicyAttachment("backend-policy-attach", {
+  role: backendRole.name,
+  policyArn: backendPolicy.arn,
+});
+
+const backendProfile = new aws.iam.InstanceProfile("backend-profile", {
+  role: backendRole.name,
+});
+
+// User data script for Docker setup
+const userData = pulumi.interpolate`#!/bin/bash
+set -e
+apt-get update
+apt-get install -y docker.io awscli
+systemctl start docker
+systemctl enable docker
+usermod -aG docker ubuntu
+
+# Install Docker Compose
+curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
+
+# Create app directory
+mkdir -p /opt/vision-sync
+chown ubuntu:ubuntu /opt/vision-sync
+`;
+
+// Backend EC2 instance
+const backendInstance = new aws.ec2.Instance("backend-instance", {
+  ami: ubuntu.then((ami) => ami.id),
+  instanceType: "t3.small",
+  keyName: backendKey.keyName,
+  vpcSecurityGroupIds: [backendSg.id],
+  subnetId: vpc.publicSubnetIds.apply((ids) => ids[0]),
+  iamInstanceProfile: backendProfile.name,
+  associatePublicIpAddress: true,
+  userData: userData,
+  tags: { ...commonTags, Name: `vision-sync-backend-${pulumi.getStack()}` },
+});
+
+// Elastic IP for backend
+const backendEip = new aws.ec2.Eip("backend-eip", {
+  instance: backendInstance.id,
+  domain: "vpc",
+  tags: commonTags,
+});
+
 // Export important resource information
 export const rawVideosBucketName = rawVideosBucket.bucket;
 export const processedVideosBucketName = processedVideosBucket.bucket;
@@ -708,6 +867,13 @@ export const ecsClusterName = ecsCluster.name;
 export const ecrRepositoryUrl = ecrRepository.repositoryUrl;
 export const lambdaFunctionName = lambdaWithDependency.name;
 export const cloudfrontDistributionDomain = distribution.domainName;
+export const cloudfrontDistributionId = distribution.id;
+export const cloudfrontDomain = distribution.domainName;
 export const vpcId = vpc.vpcId;
 export const privateSubnetIds = vpc.privateSubnetIds;
 export const publicSubnetIds = vpc.publicSubnetIds;
+
+// Backend exports
+export const backendPublicIp = backendEip.publicIp;
+export const backendInstanceId = backendInstance.id;
+export const backendWebhookUrl = pulumi.interpolate`http://${backendEip.publicIp}:5000/api/webhook/processing-complete`;

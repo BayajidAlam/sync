@@ -1,12 +1,23 @@
-// client/src/service/api.ts - Complete API service with missing methods
-
 import type { ApiResponse, UploadResponse, Video, VideoStatus } from "../types";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const CLOUDFRONT_URL = import.meta.env.VITE_CLOUDFRONT_URL || "";
 
-class ApiService {
+export class ApiService {
+  private baseUrl: string;
+  private cloudfrontUrl: string;
+
+  constructor() {
+    this.baseUrl = API_BASE_URL;
+    this.cloudfrontUrl = CLOUDFRONT_URL;
+
+    console.log("API Service initialized:", {
+      api: this.baseUrl,
+      cloudfront: this.cloudfrontUrl,
+    });
+  }
   private async fetch<T>(endpoint: string, options?: RequestInit): Promise<T> {
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    const response = await fetch(`${this.baseUrl}${endpoint}`, {
       headers: {
         "Content-Type": "application/json",
         ...options?.headers,
@@ -31,10 +42,11 @@ class ApiService {
     return response.json();
   }
 
+  // Generate presigned URL for upload
   async generatePresignedUrl(
     fileName: string,
     fileType: string,
-    fileSize?: number 
+    fileSize?: number
   ): Promise<UploadResponse> {
     const response = await this.fetch<{ data: UploadResponse }>(
       "/api/upload/generate-presigned-url",
@@ -43,7 +55,7 @@ class ApiService {
         body: JSON.stringify({
           fileName,
           fileType,
-          fileSize, 
+          fileSize: fileSize || 0,
         }),
       }
     );
@@ -51,52 +63,53 @@ class ApiService {
     return response.data;
   }
 
-  // 🔥 NEW: Upload confirmation (MISSING PIECE!)
+  // 🔥 NEW: Upload confirmation
   async confirmUpload(videoId: string): Promise<ApiResponse<Video>> {
     return this.fetch<ApiResponse<Video>>(`/api/upload/confirm/${videoId}`, {
       method: "POST",
     });
   }
 
+  // Upload file to S3
   async uploadToS3(
-    presignedUrl: string,
+    url: string,
     file: File,
     onProgress?: (progress: number) => void
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
 
-      xhr.upload.addEventListener("progress", (event) => {
-        if (event.lengthComputable && onProgress) {
-          const progress = (event.loaded / event.total) * 100;
+      xhr.upload.addEventListener("progress", (e) => {
+        if (e.lengthComputable && onProgress) {
+          const progress = (e.loaded / e.total) * 100;
           onProgress(progress);
         }
       });
 
       xhr.addEventListener("load", () => {
-        if (xhr.status === 200) {
+        if (xhr.status >= 200 && xhr.status < 300) {
           resolve();
         } else {
-          reject(new Error(`S3 Upload failed: ${xhr.status}`));
+          reject(new Error(`Upload failed with status ${xhr.status}`));
         }
       });
 
       xhr.addEventListener("error", () => {
-        reject(new Error("S3 Upload failed: Network error"));
+        reject(new Error("Upload failed"));
       });
 
       xhr.addEventListener("timeout", () => {
-        reject(new Error("S3 Upload failed: Timeout"));
+        reject(new Error("Upload failed: Timeout"));
       });
 
-      xhr.open("PUT", presignedUrl);
+      xhr.open("PUT", url);
       xhr.setRequestHeader("Content-Type", file.type);
       xhr.timeout = 300000; // 5 minutes timeout
       xhr.send(file);
     });
   }
 
-  // 🔥 VIDEO APIS (Enhanced)
+  // 🔥 VIDEO APIS
   async getAllVideos(): Promise<ApiResponse<Video[]>> {
     return this.fetch<ApiResponse<Video[]>>("/api/videos");
   }
@@ -146,13 +159,27 @@ class ApiService {
     });
   }
 
-  // 🔥 STREAMING APIS (Enhanced)
-  getSegmentUrl(videoId: string, segment: string): string {
-    return `${API_BASE_URL}/api/videos/${videoId}/segments/${segment}`;
+  // 🔥 STREAMING APIS
+  getManifestUrl(videoId: string): string {
+    if (this.cloudfrontUrl) {
+      return `${this.cloudfrontUrl}/${videoId}/manifest.mpd`;
+    } else {
+      return `${this.baseUrl}/api/videos/${videoId}/manifest`;
+    }
   }
 
-  getManifestUrl(videoId: string): string {
-    return `${API_BASE_URL}/api/videos/${videoId}/manifest.mpd`;
+  getThumbnailUrl(videoId: string): string {
+    if (this.cloudfrontUrl) {
+      return `${this.cloudfrontUrl}/${videoId}/thumbnail.jpg`;
+    }
+    return `${this.baseUrl}/api/videos/${videoId}/thumbnail`;
+  }
+
+  getSegmentUrl(videoId: string, segment: string): string {
+    if (this.cloudfrontUrl) {
+      return `${this.cloudfrontUrl}/${videoId}/${segment}`;
+    }
+    return `${this.baseUrl}/api/videos/${videoId}/segments/${segment}`;
   }
 
   // 🔥 NEW: Health check
@@ -167,10 +194,13 @@ class ApiService {
 
   // 🔥 UTILITY METHODS
   getApiBaseUrl(): string {
-    return API_BASE_URL;
+    return this.baseUrl;
   }
 
-  // Test API connectivity
+  getCloudfrontUrl(): string {
+    return this.cloudfrontUrl;
+  }
+
   async testConnection(): Promise<boolean> {
     try {
       await this.checkHealth();
@@ -182,6 +212,3 @@ class ApiService {
 }
 
 export const apiService = new ApiService();
-
-// Export for testing
-export { ApiService };

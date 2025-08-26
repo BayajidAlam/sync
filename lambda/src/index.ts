@@ -119,7 +119,7 @@ const startECSTask = async (message: VideoMessage): Promise<string> => {
             { name: "OUTPUT_BUCKET", value: process.env.PROCESSED_BUCKET! },
             { name: "WEBHOOK_URL", value: process.env.WEBHOOK_URL || "" },
             {
-              name: "AWS_DEFAULT_REGION",
+              name: "AWS_REGION",
               value: process.env.AWS_REGION || "ap-southeast-1",
             },
 

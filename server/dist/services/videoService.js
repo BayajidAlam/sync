@@ -154,21 +154,56 @@ export class VideoService {
             throw new Error("Failed to delete video");
         }
     }
-    async markVideoAsReady(videoId, manifestUrl) {
+    async markVideoAsReady(videoId, manifestPath) {
         try {
-            const updates = { status: VideoStatus.READY };
-            if (manifestUrl) {
-                updates.manifestUrl = manifestUrl;
-            }
-            const video = await VideoModel.findByIdAndUpdate(videoId, { $set: updates }, { new: true });
-            if (!video) {
+            // Build CloudFront URLs
+            const cloudfrontBaseUrl = config.CLOUDFRONT_DOMAIN
+                ? `https://${config.CLOUDFRONT_DOMAIN}`
+                : `https://d-example.cloudfront.net`; // fallback for local dev
+            const manifestUrl = `${cloudfrontBaseUrl}/${manifestPath}`;
+            const videoUrl = `${cloudfrontBaseUrl}/${videoId}/`;
+            const thumbnailUrl = `${cloudfrontBaseUrl}/${videoId}/thumbnail.jpg`;
+            // Update video with CloudFront URLs
+            const video = await VideoModel.findByIdAndUpdate(videoId, {
+                status: VideoStatus.READY,
+                manifestUrl,
+                videoUrl,
+                thumbnailUrl,
+                updatedAt: new Date(),
+            }, { new: true });
+            if (!video)
                 return null;
-            }
-            return this.mapDocumentToVideo(video);
+            const result = this.mapDocumentToVideo(video);
+            // 🔄 EMIT READY STATUS WITH CLOUDFRONT URLs
+            socketService.emitVideoStatus(videoId, "READY", {
+                manifestUrl,
+                videoUrl,
+                thumbnailUrl,
+                message: "Video is ready for streaming!",
+                streamingUrl: manifestUrl, // Direct link for the player
+            });
+            console.log(`✅ Video ${videoId} marked as ready with CloudFront URLs`);
+            console.log(`   Manifest: ${manifestUrl}`);
+            console.log(`   Video: ${videoUrl}`);
+            return result;
         }
         catch (error) {
             console.error("Error marking video as ready:", error);
             throw new Error("Failed to mark video as ready");
+        }
+    }
+    async getSignedStreamingUrl(videoId) {
+        try {
+            const video = await this.getVideoById(videoId);
+            if (!video || !video.manifestUrl)
+                return null;
+            // For now, return the public CloudFront URL
+            // Later, you can implement CloudFront signed URLs here
+            return video.manifestUrl;
+        }
+        catch (error) {
+            console.error("Error getting signed URL:", error);
+            return null;
         }
     }
     // MongoDB-specific search methods

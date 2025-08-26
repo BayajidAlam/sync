@@ -8,7 +8,8 @@ export declare class VideoService {
     getVideoById(id: string): Promise<Video | null>;
     updateVideo(id: string, updates: UpdateVideoRequest): Promise<Video | null>;
     deleteVideo(id: string): Promise<boolean>;
-    markVideoAsReady(videoId: string, manifestUrl?: string): Promise<Video | null>;
+    markVideoAsReady(videoId: string, manifestPath: string): Promise<Video | null>;
+    getSignedStreamingUrl(videoId: string): Promise<string | null>;
     searchVideos(query: string): Promise<Video[]>;
     getVideosByStatus(status: VideoStatus): Promise<Video[]>;
     getVideoStats(): Promise<{
