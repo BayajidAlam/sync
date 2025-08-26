@@ -1,75 +1,79 @@
-// Add this to server/src/routes/webhook.ts (create new file)
-import express from "express";
-import { videoService } from "../services/videoService.js";
-import { VideoStatus } from "../types/index.js";
+// server/src/routes/webhook.ts - Updated with Socket.IO
+import express from 'express';
+import { videoService } from '../services/videoService.js';
+import { socketService } from '../socket/socketService.js';
+import { VideoStatus } from '../types/index.js';
 
 const router = express.Router();
 
-// Webhook endpoint for ECS completion notification
-router.post(
-  "/video-processed",
-  async (req: express.Request, res: express.Response): Promise<void> => {
-    try {
-      const { videoId, status, manifestUrl, error } = req.body;
+// Webhook for video processing completion
+router.post('/processing-complete', async (req, res) => {
+  try {
+    const { videoId, status, manifestUrl, error } = req.body;
 
-      if (!videoId) {
-        res.status(400).json({
-          error: "Missing videoId in webhook payload",
-        });
-        return;
-      }
+    if (!videoId || !status) {
+      res.status(400).json({
+        error: 'Missing required fields: videoId, status',
+      });
+      return;
+    }
 
-      console.log(`📥 Webhook received: Video ${videoId} status: ${status}`);
+    console.log(`📥 Webhook received: Video ${videoId} status: ${status}`);
 
-      if (status === "completed" && manifestUrl) {
-        // Mark video as ready for streaming
-        const video = await videoService.markVideoAsReady(videoId, manifestUrl);
+    // Update database
+    let updatedVideo;
+    if (status === 'ready' && manifestUrl) {
+      updatedVideo = await videoService.markVideoAsReady(videoId, manifestUrl);
+      
+      // ✅ EMIT REAL-TIME UPDATE
+      socketService.emitVideoStatus(videoId, 'READY', {
+        manifestUrl,
+        message: 'Video processing complete! Ready for streaming.'
+      });
 
-        if (video) {
-          console.log(`✅ Video ${videoId} marked as READY for streaming`);
+    } else if (status === 'error' || error) {
+      updatedVideo = await videoService.updateVideoStatus(videoId, VideoStatus.ERROR);
+      
+      // ❌ EMIT ERROR UPDATE  
+      socketService.emitVideoStatus(videoId, 'ERROR', {
+        error: error || 'Processing failed',
+        message: 'Video processing failed. Please try uploading again.'
+      });
 
-          // TODO: Send real-time notification to frontend via Socket.IO
-          // socketService.emitVideoStatus(videoId, 'READY')
-
-          res.json({
-            success: true,
-            message: "Video marked as ready",
-            data: video,
-          });
-        } else {
-          res.status(404).json({
-            error: "Video not found",
-          });
-        }
-      } else if (status === "failed" || error) {
-        // Mark video as error
-        await videoService.updateVideoStatus(videoId, VideoStatus.ERROR);
-
-        console.log(`❌ Video ${videoId} processing failed: ${error}`);
-
-        res.json({
-          success: true,
-          message: "Video marked as error",
-        });
-      } else {
-        res.status(400).json({
-          error: "Invalid webhook payload",
-        });
-      }
-    } catch (error) {
-      console.error("Webhook processing error:", error);
-      res.status(500).json({
-        error: "Failed to process webhook",
+    } else {
+      updatedVideo = await videoService.updateVideoStatus(videoId, status.toUpperCase());
+      
+      // 🔄 EMIT PROCESSING UPDATE
+      socketService.emitVideoStatus(videoId, status.toUpperCase(), {
+        message: `Video is ${status}`
       });
     }
-  }
-);
 
-// Health check for webhook
-router.get("/health", (req: express.Request, res: express.Response) => {
+    if (!updatedVideo) {
+      res.status(404).json({ error: 'Video not found' });
+      return;
+    }
+
+    console.log(`✅ Video ${videoId} updated and broadcasted`);
+
+    res.json({
+      data: updatedVideo,
+      message: 'Video status updated and broadcasted',
+    });
+
+  } catch (error) {
+    console.error('Processing webhook error:', error);
+    res.status(500).json({ error: 'Failed to update video status' });
+  }
+});
+
+// Health check endpoint
+router.get('/health', (req, res) => {
   res.json({
-    status: "healthy",
+    status: 'ok',
     timestamp: new Date().toISOString(),
+    service: 'vision-sync-server',
+    connections: socketService.getConnectionCount()
   });
 });
 
