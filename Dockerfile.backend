@@ -1,24 +1,33 @@
-# Backend Dockerfile
+# Dockerfile.backend
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+COPY server/package*.json ./
+COPY server/tsconfig.json ./
+RUN npm ci
+
+COPY server/src ./src/
+RUN npm run build
+
+# Production
 FROM node:18-alpine
+
+RUN apk add --no-cache curl dumb-init \
+    && adduser -D -s /bin/sh appuser
 
 WORKDIR /app
 
-# Copy package files
 COPY server/package*.json ./
-RUN npm ci --only=production
+RUN npm ci --only=production && npm cache clean --force
 
-# Copy source code
-COPY server/ ./
+COPY --from=builder /app/dist ./dist
+RUN mkdir -p logs && chown -R appuser:appuser /app
 
-# Build the application
-RUN npm run build
+USER appuser
 
-# Expose port
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
 EXPOSE 5000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:5000/health || exit 1
-
-# Start the application
-CMD ["npm", "start"]
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "dist/server.js"]

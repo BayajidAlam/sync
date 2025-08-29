@@ -1,5 +1,5 @@
-// client/src/hooks/useSocket.ts - Updated for Vite
-import { useEffect, useRef, useState } from 'react';
+// client/src/hooks/useSocket.ts - FIXED VERSION with proper cleanup
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 
 interface VideoStatusEvent {
@@ -19,106 +19,267 @@ interface ProgressEvent {
   timestamp: string;
 }
 
-// Use Vite environment variable
+interface ConnectionState {
+  isConnected: boolean;
+  isConnecting: boolean;
+  connectionError: string | null;
+  reconnectAttempt: number;
+}
+
 const DEFAULT_SERVER_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export const useSocket = (serverUrl: string = DEFAULT_SERVER_URL) => {
   const socketRef = useRef<Socket | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isUnmountedRef = useRef(false);
+  
+  const [connectionState, setConnectionState] = useState<ConnectionState>({
+    isConnected: false,
+    isConnecting: false,
+    connectionError: null,
+    reconnectAttempt: 0
+  });
+  
   const [videoStatus, setVideoStatus] = useState<VideoStatusEvent | null>(null);
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
 
-  useEffect(() => {
+  // Cleanup function
+  const cleanup = useCallback(() => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    if (socketRef.current) {
+      console.log('🧹 Cleaning up socket connection');
+      
+      // Remove all listeners to prevent memory leaks
+      socketRef.current.removeAllListeners();
+      
+      // Disconnect and cleanup
+      socketRef.current.disconnect();
+      socketRef.current = null;
+    }
+
+    // Reset state
+    setConnectionState({
+      isConnected: false,
+      isConnecting: false,
+      connectionError: null,
+      reconnectAttempt: 0
+    });
+    setVideoStatus(null);
+    setProgress(null);
+  }, []);
+
+  // Connect function with retry logic
+  const connect = useCallback(() => {
+    if (isUnmountedRef.current || socketRef.current?.connected) {
+      return;
+    }
+
+    setConnectionState(prev => ({
+      ...prev,
+      isConnecting: true,
+      connectionError: null
+    }));
+
     console.log('🔌 Connecting to Socket.IO server:', serverUrl);
     
-    // Initialize socket connection
     socketRef.current = io(serverUrl, {
       transports: ['websocket', 'polling'],
-      timeout: 20000,
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 5,
+      timeout: 10000,
+      reconnection: false, // Handle manually for better control
+      forceNew: true, // Ensure clean connection
     });
 
     const socket = socketRef.current;
 
-    // Connection events
+    // Connection success
     socket.on('connect', () => {
-      setIsConnected(true);
+      if (isUnmountedRef.current) {
+        socket.disconnect();
+        return;
+      }
+
       console.log('✅ Connected to Socket.IO server');
-      console.log('Socket ID:', socket.id);
+      setConnectionState({
+        isConnected: true,
+        isConnecting: false,
+        connectionError: null,
+        reconnectAttempt: 0
+      });
     });
 
-    socket.on('disconnect', () => {
-      setIsConnected(false);
-      console.log('❌ Disconnected from Socket.IO server');
+    // Connection lost
+    socket.on('disconnect', (reason) => {
+      console.log('❌ Disconnected from Socket.IO server:', reason);
+      
+      setConnectionState(prev => ({
+        ...prev,
+        isConnected: false,
+        isConnecting: false
+      }));
+
+      // Only auto-reconnect for certain disconnect reasons
+      if (!isUnmountedRef.current && 
+          reason === 'io server disconnect' || 
+          reason === 'transport close' ||
+          reason === 'transport error') {
+        
+        scheduleReconnect();
+      }
     });
 
-    socket.on('reconnect', (attemptNumber: number) => {
-      console.log('🔄 Reconnected after', attemptNumber, 'attempts');
-    });
+    // Connection error
+    socket.on('connect_error', (error) => {
+      console.error('🔴 Socket connection error:', error.message);
+      
+      setConnectionState(prev => ({
+        ...prev,
+        isConnected: false,
+        isConnecting: false,
+        connectionError: error.message
+      }));
 
-    socket.on('reconnect_error', (error: Error) => {
-      console.error('🔴 Reconnection error:', error.message);
+      if (!isUnmountedRef.current) {
+        scheduleReconnect();
+      }
     });
 
     // Video status updates
     socket.on('video-status', (data: VideoStatusEvent) => {
-      console.log('📡 Received video status:', data);
-      setVideoStatus(data);
+      if (!isUnmountedRef.current) {
+        console.log('📡 Received video status:', data);
+        setVideoStatus(data);
+      }
     });
 
-    // Processing progress updates
+    // Processing progress updates  
     socket.on('processing-progress', (data: ProgressEvent) => {
-      console.log('📊 Received progress:', data);
-      setProgress(data);
+      if (!isUnmountedRef.current) {
+        console.log('📊 Received progress:', data);
+        setProgress(data);
+      }
     });
 
-    // Error handling
+    // General error handling
     socket.on('error', (error: any) => {
       console.error('Socket error:', error);
     });
 
-    // Cleanup on unmount
-    return () => {
-      console.log('🧹 Cleaning up socket connection');
-      socket.disconnect();
-    };
   }, [serverUrl]);
 
-  // Join video room for targeted updates
-  const joinVideo = (videoId: string) => {
-    if (socketRef.current && socketRef.current.connected) {
+  // Smart reconnect with exponential backoff
+  const scheduleReconnect = useCallback(() => {
+    if (isUnmountedRef.current || reconnectTimeoutRef.current) {
+      return;
+    }
+
+    setConnectionState(prev => {
+      const newAttempt = prev.reconnectAttempt + 1;
+      
+      // Give up after 5 attempts
+      if (newAttempt > 5) {
+        console.log('🔴 Max reconnection attempts reached');
+        return {
+          ...prev,
+          connectionError: 'Connection failed after multiple attempts'
+        };
+      }
+
+      // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+      const delay = Math.pow(2, newAttempt - 1) * 1000;
+      
+      console.log(`🔄 Scheduling reconnect attempt ${newAttempt} in ${delay}ms`);
+      
+      reconnectTimeoutRef.current = setTimeout(() => {
+        reconnectTimeoutRef.current = null;
+        if (!isUnmountedRef.current) {
+          cleanup();
+          connect();
+        }
+      }, delay);
+
+      return {
+        ...prev,
+        reconnectAttempt: newAttempt,
+        isConnecting: true
+      };
+    });
+  }, [cleanup, connect]);
+
+  // Manual reconnect function
+  const reconnect = useCallback(() => {
+    console.log('🔄 Manual reconnect requested');
+    cleanup();
+    setConnectionState(prev => ({ ...prev, reconnectAttempt: 0 }));
+    connect();
+  }, [cleanup, connect]);
+
+  // Initialize connection
+  useEffect(() => {
+    isUnmountedRef.current = false;
+    connect();
+
+    // Cleanup on unmount
+    return () => {
+      console.log('🧹 Component unmounting, cleaning up socket');
+      isUnmountedRef.current = true;
+      cleanup();
+    };
+  }, [connect, cleanup]);
+
+  // Room management functions
+  const joinVideo = useCallback((videoId: string) => {
+    if (socketRef.current?.connected && !isUnmountedRef.current) {
       socketRef.current.emit('join-video', videoId);
       console.log(`🎬 Joined video room: ${videoId}`);
     } else {
       console.warn('Cannot join video room - socket not connected');
     }
-  };
+  }, []);
 
-  // Leave video room
-  const leaveVideo = (videoId: string) => {
-    if (socketRef.current && socketRef.current.connected) {
+  const leaveVideo = useCallback((videoId: string) => {
+    if (socketRef.current?.connected && !isUnmountedRef.current) {
       socketRef.current.emit('leave-video', videoId);
       console.log(`👋 Left video room: ${videoId}`);
     }
-  };
+  }, []);
 
-  // Join user room for user-specific updates
-  const joinUser = (userId: string) => {
-    if (socketRef.current && socketRef.current.connected) {
+  const joinUser = useCallback((userId: string) => {
+    if (socketRef.current?.connected && !isUnmountedRef.current) {
       socketRef.current.emit('join-user', userId);
       console.log(`👤 Joined user room: ${userId}`);
     }
-  };
+  }, []);
+
+  // Clear status when needed (e.g., when navigating away from video)
+  const clearVideoStatus = useCallback(() => {
+    setVideoStatus(null);
+  }, []);
+
+  const clearProgress = useCallback(() => {
+    setProgress(null);  
+  }, []);
 
   return {
-    isConnected,
+    // Connection state
+    ...connectionState,
+    
+    // Event data
     videoStatus,
     progress,
+    
+    // Actions
     joinVideo,
-    leaveVideo,
+    leaveVideo, 
     joinUser,
+    reconnect,
+    clearVideoStatus,
+    clearProgress,
+    
+    // Direct socket access (use sparingly)
     socket: socketRef.current,
   };
 };

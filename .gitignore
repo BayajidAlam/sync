@@ -1,5 +1,3 @@
-# Create a comprehensive .gitignore at project root
-cat > .gitignore << 'EOF'
 # Environment variables - NEVER commit these
 .env
 .env.*
@@ -24,13 +22,21 @@ cat > .gitignore << 'EOF'
 **/credentials
 **/config
 
-# Dependencies
+# Dependencies - Node.js modules at all levels
 node_modules/
 **/node_modules/
+container/node_modules/
+lambda/node_modules/
+server/node_modules/
+client/node_modules/
+IaC/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-package-lock.json
+
+# Package lock files (optional - comment out if you want to keep them)
+# package-lock.json
+# **/package-lock.json
 
 # Build outputs
 dist/
@@ -39,6 +45,11 @@ build/
 **/build/
 .next/
 out/
+**/out/
+
+# TypeScript build info
+*.tsbuildinfo
+**/*.tsbuildinfo
 
 # Logs
 *.log
@@ -91,4 +102,18 @@ Pulumi.*.yaml
 *.key
 *.crt
 *.cert
-EOF
+
+# SSH keys
+*.rsa
+*.rsa.pub
+**/id_rsa*
+**/.ssh/
+
+# Docker
+.dockerignore
+
+# CDK and Terraform
+cdk.out/
+*.tfstate
+*.tfstate.*
+.terraform/
